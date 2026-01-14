@@ -1,0 +1,227 @@
+ส่วนที่ 1️⃣ แปลงระบบจาก localStorage → IndexedDB (Offline-only)
+เหตุผลที่ต้องใช้ IndexedDB
+
+เก็บข้อมูลได้ เยอะมาก (หลายร้อย MB)
+
+เร็วกว่า localStorage เมื่อข้อมูลโต
+
+เหมาะกับแอปบัญชีแบบของคุณ
+
+ใช้งาน Offline 100%
+
+โครงสร้างข้อมูลที่แนะนำ (1 Database)
+
+Database name
+
+offline_finance_db
+
+
+Object Stores
+
+settings        → accounts, currentAccount, backupPassword
+records         → รายการทั้งหมด
+accountTypes    → ประเภทแยกตามบัญชี
+
+1️⃣ สร้างไฟล์ใหม่ (แนะนำมาก)
+
+สร้างไฟล์ใหม่ชื่อ
+
+indexeddb.js
+
+โค้ดพื้นฐาน (ใช้ได้ทันที)
+const DB_NAME = 'offline_finance_db';
+const DB_VERSION = 1;
+
+function openDB() {
+    return new Promise((resolve, reject) => {
+        const request = indexedDB.open(DB_NAME, DB_VERSION);
+
+        request.onupgradeneeded = (e) => {
+            const db = e.target.result;
+
+            if (!db.objectStoreNames.contains('settings')) {
+                db.createObjectStore('settings', { keyPath: 'key' });
+            }
+            if (!db.objectStoreNames.contains('records')) {
+                db.createObjectStore('records', { autoIncrement: true });
+            }
+            if (!db.objectStoreNames.contains('accountTypes')) {
+                db.createObjectStore('accountTypes', { keyPath: 'account' });
+            }
+        };
+
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () => reject(request.error);
+    });
+}
+
+2️⃣ save / load (แทน saveToLocal / loadFromLocal)
+🔹 saveToIndexedDB()
+async function saveToIndexedDB() {
+    const db = await openDB();
+    const tx = db.transaction(['settings', 'records', 'accountTypes'], 'readwrite');
+
+    tx.objectStore('settings').put({ key: 'accounts', value: accounts });
+    tx.objectStore('settings').put({ key: 'currentAccount', value: currentAccount });
+    tx.objectStore('settings').put({ key: 'backupPassword', value: backupPassword });
+
+    const recordStore = tx.objectStore('records');
+    recordStore.clear();
+    records.forEach(r => recordStore.add(r));
+
+    const typeStore = tx.objectStore('accountTypes');
+    typeStore.clear();
+    accountTypes.forEach((value, key) => {
+        typeStore.put({ account: key, types: value });
+    });
+
+    return tx.complete;
+}
+
+🔹 loadFromIndexedDB()
+async function loadFromIndexedDB() {
+    const db = await openDB();
+
+    // settings
+    const settingsTx = db.transaction('settings', 'readonly');
+    const settingsStore = settingsTx.objectStore('settings');
+
+    accounts = (await settingsStore.get('accounts'))?.value || [];
+    currentAccount = (await settingsStore.get('currentAccount'))?.value || null;
+    backupPassword = (await settingsStore.get('backupPassword'))?.value || null;
+
+    // records
+    records = [];
+    await new Promise(resolve => {
+        const tx = db.transaction('records', 'readonly');
+        tx.objectStore('records').openCursor().onsuccess = e => {
+            const cursor = e.target.result;
+            if (cursor) {
+                records.push(cursor.value);
+                cursor.continue();
+            } else resolve();
+        };
+    });
+
+    // accountTypes
+    accountTypes = new Map();
+    await new Promise(resolve => {
+        const tx = db.transaction('accountTypes', 'readonly');
+        tx.objectStore('accountTypes').openCursor().onsuccess = e => {
+            const cursor = e.target.result;
+            if (cursor) {
+                accountTypes.set(cursor.value.account, cursor.value.types);
+                cursor.continue();
+            } else resolve();
+        };
+    });
+}
+
+ส่วนที่ 2️⃣ CHECKLIST แก้ทีละบรรทัดจากไฟล์เดิม (ครบ 100%)
+✅ A. ลบ Online / Firebase (ต้องทำ)
+
+ ลบ <script firebase*> ใน HTML
+
+ ลบตัวแปร
+
+currentUser
+db
+unsubscribeMain
+unsubscribeMap
+
+
+ ลบฟังก์ชัน
+
+saveToFirebase
+loadFromFirebase
+setupRealtimeListener
+deleteRecordRealtime
+deleteAccountFromFirebase
+
+✅ B. Authentication
+
+ ลบ login overlay HTML
+
+ ลบ emailLogin / emailLogout
+
+ แก้ helper
+
+function getCurrentUserIdentifier() {
+    return 'Local User';
+}
+
+✅ C. โหลดข้อมูลตอนเปิดเว็บ
+
+แทนที่ทั้งหมดด้วย
+
+document.addEventListener('DOMContentLoaded', async () => {
+    await loadFromIndexedDB();
+    updateAccountSelect();
+    changeAccount();
+    showToast('📴 Offline mode (IndexedDB)', 'info');
+});
+
+✅ D. เปลี่ยนทุก saveToLocal()
+
+ค้นหาในไฟล์:
+
+saveToLocal(
+
+
+แทนทั้งหมดด้วย:
+
+await saveToIndexedDB();
+
+✅ E. จุดสำคัญที่ต้องแก้แน่นอน
+addEntry()
+
+ ลบ if (currentUser)
+
+ save → IndexedDB เท่านั้น
+
+deleteRecord()
+
+ ลบ realtime delete
+
+ ลบจาก array
+
+ save IndexedDB
+
+addAccount / editAccount / deleteAccount
+
+ ไม่เรียก Firebase
+
+ save IndexedDB อย่างเดียว
+
+✅ F. Sync Status
+
+แทนที่ทั้งฟังก์ชัน
+
+function updateSyncStatus() {
+    const el = document.getElementById('sync-status');
+    if (!el) return;
+    el.textContent = '📴 Offline (IndexedDB)';
+    el.style.color = '#777';
+}
+
+✅ G. Realtime / Listener
+
+ ลบทุก onSnapshot
+
+ ลบ unsubscribe ทั้งหมด
+
+✅ H. Audit Trail
+
+ยังใช้ได้เหมือนเดิม:
+
+createdBy: 'Local User'
+editedBy: 'Local User'
+
+✅ ผลลัพธ์หลังทำครบ
+
+✔ Offline-only 100%
+✔ ไม่มี Firebase
+✔ ไม่มี Login
+✔ ข้อมูลไม่หาย
+✔ เร็วกว่าเดิม
+✔ รองรับข้อมูลจำนวนมาก
